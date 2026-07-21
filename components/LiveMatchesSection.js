@@ -1,17 +1,35 @@
 // components/LiveMatchesSection.js
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import LiveMatchCard from './LiveMatchCard';
+import { getLiveMatches } from '../services/matchesService';
 import { colors, type, spacing } from '../theme/tokens';
 
-const DEFAULT_MATCHES = [
-  { id: '1', league: 'Premier League', minute: 67, home: 'Liverpool', away: 'Everton', homeScore: 2, awayScore: 1 },
-  { id: '2', league: 'La Liga', minute: 34, home: 'Real Madrid', away: 'Sevilla', homeScore: 1, awayScore: 0 },
-  { id: '3', league: 'Serie A', minute: 78, home: 'Inter', away: 'Roma', homeScore: 0, awayScore: 0 },
-  { id: '4', league: 'Bundesliga', minute: 12, home: 'Dortmund', away: 'Leipzig', homeScore: 0, awayScore: 1 },
-];
+// Home's rail has always shown 4 matches (it's a preview, not the full
+// list) — that limit is preserved here exactly as it was when the data
+// was a local DEFAULT_MATCHES array.
+const HOME_RAIL_LIMIT = 4;
 
-export default function LiveMatchesSection({ matches = DEFAULT_MATCHES }) {
+export default function LiveMatchesSection({ matches }) {
+  const [fetchedMatches, setFetchedMatches] = useState(matches || []);
+
+  useEffect(() => {
+    // If a `matches` prop is explicitly passed in, respect it and skip
+    // fetching — this keeps the component's existing override behavior
+    // intact for any future caller that wants custom data.
+    if (matches) return;
+
+    let isMounted = true;
+    getLiveMatches({ limit: HOME_RAIL_LIMIT }).then((data) => {
+      if (isMounted) setFetchedMatches(data);
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [matches]);
+
+  const displayedMatches = matches || fetchedMatches;
+
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
@@ -26,7 +44,7 @@ export default function LiveMatchesSection({ matches = DEFAULT_MATCHES }) {
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {matches.map((m) => (
+        {displayedMatches.map((m) => (
           <LiveMatchCard key={m.id} match={m} />
         ))}
       </ScrollView>
