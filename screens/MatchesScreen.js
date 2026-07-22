@@ -1,25 +1,15 @@
 // screens/MatchesScreen.js
-import React, { useEffect, useState } from 'react';
-import { StyleSheet, ScrollView, StatusBar, SafeAreaView, View } from 'react-native';
+import React from 'react';
+import { StyleSheet, ScrollView, StatusBar, SafeAreaView, View, Text, TouchableOpacity } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import ScreenHeader from '../components/ScreenHeader';
 import LiveMatchCard from '../components/LiveMatchCard';
-import { getLiveMatches } from '../services/matchesService';
-import { colors, spacing, gradients } from '../theme/tokens';
+import useLiveMatches from '../hooks/useLiveMatches';
+import { colors, type, spacing, gradients } from '../theme/tokens';
 
 export default function MatchesScreen() {
-  const [matches, setMatches] = useState([]);
-
-  useEffect(() => {
-    let isMounted = true;
-    getLiveMatches().then((data) => {
-      if (isMounted) setMatches(data);
-    });
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  const { matches, loading, error, refresh } = useLiveMatches();
 
   return (
     <SafeAreaView style={styles.root}>
@@ -36,11 +26,26 @@ export default function MatchesScreen() {
           subtitle="Every match your assistant is tracking, updated in real time."
         />
 
-        <View style={styles.list}>
-          {matches.map((m) => (
-            <LiveMatchCard key={m.id} match={m} style={styles.fullWidthCard} />
-          ))}
-        </View>
+        {loading && (
+          <Text style={styles.statusText}>Loading live matches…</Text>
+        )}
+
+        {!loading && error && (
+          <View style={styles.errorBlock}>
+            <Text style={styles.statusTextError}>Couldn't load live matches.</Text>
+            <TouchableOpacity onPress={refresh} activeOpacity={0.7}>
+              <Text style={styles.retryText}>Try again</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {!loading && !error && (
+          <View style={styles.list}>
+            {matches.map((m) => (
+              <LiveMatchCard key={m.id} match={m} style={styles.fullWidthCard} />
+            ))}
+          </View>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -64,5 +69,27 @@ const styles = StyleSheet.create({
     width: '100%',
     marginRight: 0,
     marginBottom: spacing.md,
+  },
+  statusText: {
+    ...type.body,
+    color: colors.textSecondary,
+    fontSize: 13.5,
+    paddingHorizontal: spacing.xl,
+    marginTop: spacing.lg,
+  },
+  errorBlock: {
+    paddingHorizontal: spacing.xl,
+    marginTop: spacing.lg,
+  },
+  statusTextError: {
+    ...type.body,
+    color: colors.live,
+    fontSize: 13.5,
+    marginBottom: spacing.sm,
+  },
+  retryText: {
+    ...type.bodySemiBold,
+    color: colors.emerald,
+    fontSize: 13,
   },
 });
