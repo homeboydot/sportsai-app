@@ -1,11 +1,18 @@
 // hooks/useLiveMatches.js
 //
 // Single reusable hook for consuming live match data. Wraps
-// services/matchesService.js with loading/error state and a manual
-// refresh() so screens/components stop hand-rolling their own
-// useEffect + useState fetch boilerplate (which is what
-// LiveMatchesSection.js and MatchesScreen.js were each doing
-// separately before this).
+// services/matchesService.js with loading/error state, automatic
+// polling, and a manual refresh() so screens/components stop
+// hand-rolling their own useEffect + useState fetch boilerplate.
+//
+// Polling behavior:
+//   - Fetches immediately on mount.
+//   - Automatically refetches every POLL_INTERVAL_MS (30s).
+//   - Exactly one interval is ever active per hook instance — it is
+//     always cleared on unmount (and defensively cleared before a new
+//     one is created, in case the effect re-runs).
+//   - Overlapping requests are prevented: if a fetch (auto or manual)
+//     is already in flight, a new one is skipped rather than queued.
 //
 // Usage:
 //   const { matches, loading, error, refresh } = useLiveMatches({ limit: 4 });
@@ -13,11 +20,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getLiveMatches } from '../services/matchesService';
 
+// How often the hook automatically refetches while mounted.
+const POLL_INTERVAL_MS = 30000;
+
 /**
  * @param {Object} [options]
  * @param {number} [options.limit] - passed straight through to matchesService.
  * @param {boolean} [options.enabled=true] - set to false to skip fetching
- *   entirely (e.g. when a caller supplies its own data via props).
+ *   and polling entirely (e.g. when a caller supplies its own data via props).
  * @returns {{ matches: Array, loading: boolean, error: Error|null, refresh: () => void }}
  */
 export default function useLiveMatches({ limit, enabled = true } = {}) {
@@ -29,37 +39,100 @@ export default function useLiveMatches({ limit, enabled = true } = {}) {
   // from a screen while a fetch is still in flight).
   const isMountedRef = useRef(true);
 
-  const load = useCallback(() => {
-    if (!enabled) return Promise.resolve();
+  // Guards against overlapping requests: if a fetch is already running
+  // (auto or manual), a new one is skipped rather than started.
+  const isFetchingRef = useRef(false);
 
-    setLoading(true);
-    setError(null);
+  // Holds the single active polling interval id, so it can always be
+  // cleared — both on unmount and defensively before a new one starts.
+  const intervalRef = useRef(null);
 
-    return getLiveMatches({ limit })
-      .then((data) => {
-        if (isMountedRef.current) {
-          setMatches(data);
-        }
-      })
-      .catch((err) => {
-        if (isMountedRef.current) {
-          setError(err instanceof Error ? err : new Error('Failed to load matches'));
-        }
-      })
-      .finally(() => {
-        if (isMountedRef.current) {
-          setLoading(false);
-        }
-      });
-  }, [limit, enabled]);
+  /**
+   * @param {'auto'|'manual'} trigger - only used for diagnostics, to
+   *   distinguish an automatic (mount/interval) fetch from an
+   *   explicit refresh() call.
+   */
+  const load = useCallback(
+    (trigger = 'auto') => {
+      if (!enabled) return Promise.resolve();
+
+      if (isFetchingRef.current) {
+        // A request is already in flight — skip rather than overlap.
+        return Promise.resolve();
+      }
+
+      if (__DEV__) {
+        console.log(trigger === 'manual' ? '[useLiveMatches] Manual refresh' : '[useLiveMatches] Auto refresh');
+      }
+
+      isFetchingRef.current = true;
+      setLoading(true);
+      setError(null);
+
+      return getLiveMatches({ limit })
+        .then((data) => {
+          if (isMountedRef.current) {
+            setMatches(data);
+          }
+        })
+        .catch((err) => {
+          if (isMountedRef.current) {
+            setError(err instanceof Error ? err : new Error('Failed to load matches'));
+          }
+        })
+        .finally(() => {
+          isFetchingRef.current = false;
+          if (isMountedRef.current) {
+            setLoading(false);
+          }
+        });
+    },
+    [limit, enabled]
+  );
+
+  // Exposed refresh() keeps its existing no-arg external contract —
+  // it just tags the call as 'manual' for diagnostics under the hood.
+  const refresh = useCallback(() => load('manual'), [load]);
 
   useEffect(() => {
     isMountedRef.current = true;
-    load();
+
+    if (!enabled) {
+      return () => {
+        isMountedRef.current = false;
+      };
+    }
+
+    // Fetch immediately on mount.
+    load('auto');
+
+    // Defensive: clear any pre-existing interval before creating a new
+    // one, so this hook instance can never end up with more than one
+    // active interval at a time.
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    intervalRef.current = setInterval(() => {
+      load('auto');
+    }, POLL_INTERVAL_MS);
+
+    if (__DEV__) {
+      console.log('[useLiveMatches] Polling started');
+    }
+
     return () => {
       isMountedRef.current = false;
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      if (__DEV__) {
+        console.log('[useLiveMatches] Polling stopped');
+      }
     };
-  }, [load]);
+  }, [enabled, load]);
 
-  return { matches, loading, error, refresh: load };
+  return { matches, loading, error, refresh };
 }
