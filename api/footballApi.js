@@ -2,11 +2,18 @@
 //
 // This is the ONLY file that talks to a real football data provider.
 // It is wired to API-FOOTBALL (https://www.api-football.com/) — the
-// official v3 REST API. If a request fails for any reason (missing
-// key, network error, bad response, unexpected payload), this file
-// falls back to local mock data, so matchesService.js, the hook, and
-// every screen/component keep working exactly as before and never
-// have to know the difference.
+// official v3 REST API — and exposes three fetch functions:
+//   - fetchLiveMatches()     -> matches currently in play
+//   - fetchTodayFixtures()   -> today's fixtures that haven't started yet
+//   - fetchFinishedMatches() -> today's fixtures that have finished
+//
+// fetchMatches() is kept for backward compatibility with existing
+// callers (matchesService.js) and simply delegates to fetchLiveMatches().
+//
+// If a request fails for any reason (missing key, network error, bad
+// response, unexpected payload), each function falls back to local
+// mock data, so matchesService.js, the hook, and every screen/component
+// keep working exactly as before and never have to know the difference.
 
 import { mockMatches } from '../data/mockMatches';
 
@@ -16,9 +23,26 @@ import { mockMatches } from '../data/mockMatches';
 // Docs: https://www.api-football.com/documentation-v3
 const API_FOOTBALL_BASE_URL = 'https://v3.football.api-sports.io';
 
+// Today's date, computed once at module load (YYYY-MM-DD), used to build
+// the today/finished endpoint constants below.
+function getTodayDateString() {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 // Live-fixtures endpoint — every match currently in play, across every
-// league API-FOOTBALL covers. This is the single endpoint used here.
+// league API-FOOTBALL covers.
 const LIVE_FIXTURES_ENDPOINT = `${API_FOOTBALL_BASE_URL}/fixtures?live=all`;
+
+// Today's fixtures that haven't started yet (NS = Not Started).
+const TODAY_FIXTURES_ENDPOINT = `${API_FOOTBALL_BASE_URL}/fixtures?date=${getTodayDateString()}&status=NS`;
+
+// Today's finished fixtures (FT = full time, AET = after extra time,
+// PEN = after penalties) — covers every "finished" status API-FOOTBALL uses.
+const FINISHED_FIXTURES_ENDPOINT = `${API_FOOTBALL_BASE_URL}/fixtures?date=${getTodayDateString()}&status=FT-AET-PEN`;
 
 // The API key is never hardcoded. In Expo, only environment variables
 // prefixed with EXPO_PUBLIC_ are inlined into the client bundle at
@@ -64,22 +88,22 @@ function normalizeFixture(fixture) {
 }
 
 /**
- * Local mock fallback. Used whenever the real API-FOOTBALL request
- * can't be completed for any reason — missing key, network failure,
- * non-OK response, timeout, or an unexpected payload shape. Returns a
- * copy (not the original array reference) so callers can never mutate
- * the underlying mock data.
+ * Local mock fallback. Used whenever a real API-FOOTBALL request can't
+ * be completed for any reason — missing key, network failure, non-OK
+ * response, timeout, or an unexpected payload shape. Returns a copy
+ * (not the original array reference) so callers can never mutate the
+ * underlying mock data.
  */
 function getMockFallback() {
   return mockMatches.map((match) => ({ ...match }));
 }
 
 /**
- * Fetch all live/today matches.
- *
- * Tries the real API-FOOTBALL live-fixtures endpoint first; on any
- * failure, falls back to mock data so the rest of the app never has to
- * handle a rejected promise for this reason.
+ * Shared request core used by every exported fetch function below.
+ * Handles the API key check, timeout, real request, response
+ * validation, normalization, __DEV__ diagnostics, and mock fallback —
+ * so fetchLiveMatches/fetchTodayFixtures/fetchFinishedMatches all share
+ * one implementation instead of near-identical copies.
  *
  * -----------------------------------------------------------------
  * TEMPORARY DEV DIAGNOSTICS
@@ -89,12 +113,13 @@ function getMockFallback() {
  * do not change any control flow, timing, or return value below.
  * Safe to delete once real-API integration is confirmed stable.
  *
+ * @param {string} endpoint - the full API-FOOTBALL endpoint URL to request.
  * @returns {Promise<Array>} matches shaped as:
  *   { id, league, minute, home, away, homeScore, awayScore }
  */
-export async function fetchMatches() {
+async function requestFixtures(endpoint) {
   if (__DEV__) {
-    console.group('[footballApi] fetchMatches');
+    console.group('[footballApi] requestFixtures');
     console.log('API key present:', Boolean(API_KEY));
   }
 
@@ -121,7 +146,7 @@ export async function fetchMatches() {
   }
 
   if (__DEV__) {
-    console.log('Endpoint:', LIVE_FIXTURES_ENDPOINT);
+    console.log('Endpoint:', endpoint);
   }
 
   const controller = new AbortController();
@@ -129,9 +154,9 @@ export async function fetchMatches() {
 
   try {
     // --- Real API-FOOTBALL request -------------------------------------
-    // Endpoint: GET {API_FOOTBALL_BASE_URL}/fixtures?live=all
+    // Endpoint: GET <endpoint>
     // Header:   x-apisports-key: <API_KEY>
-    const response = await fetch(LIVE_FIXTURES_ENDPOINT, {
+    const response = await fetch(endpoint, {
       method: 'GET',
       headers: {
         'x-apisports-key': API_KEY,
@@ -178,4 +203,41 @@ export async function fetchMatches() {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+/**
+ * Fetch all matches currently live.
+ * Endpoint: GET {API_FOOTBALL_BASE_URL}/fixtures?live=all
+ * @returns {Promise<Array>}
+ */
+export async function fetchLiveMatches() {
+  return requestFixtures(LIVE_FIXTURES_ENDPOINT);
+}
+
+/**
+ * Fetch today's fixtures that haven't started yet ("upcoming").
+ * Endpoint: GET {API_FOOTBALL_BASE_URL}/fixtures?date=YYYY-MM-DD&status=NS
+ * @returns {Promise<Array>}
+ */
+export async function fetchTodayFixtures() {
+  return requestFixtures(TODAY_FIXTURES_ENDPOINT);
+}
+
+/**
+ * Fetch today's fixtures that have finished (FT / AET / PEN).
+ * Endpoint: GET {API_FOOTBALL_BASE_URL}/fixtures?date=YYYY-MM-DD&status=FT-AET-PEN
+ * @returns {Promise<Array>}
+ */
+export async function fetchFinishedMatches() {
+  return requestFixtures(FINISHED_FIXTURES_ENDPOINT);
+}
+
+/**
+ * Fetch all live/today matches.
+ * Kept for backward compatibility with existing callers
+ * (services/matchesService.js) — delegates to fetchLiveMatches().
+ * @returns {Promise<Array>}
+ */
+export async function fetchMatches() {
+  return fetchLiveMatches();
 }
