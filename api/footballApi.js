@@ -54,7 +54,7 @@ const API_KEY = process.env.EXPO_PUBLIC_API_FOOTBALL_KEY;
 // Toggle to true locally to force the mock-data fallback path — useful
 // for exercising loading/error handling without touching your real key
 // or network connection.
-const FORCE_MOCK_FALLBACK = false;
+const SIMULATE_FAILURE = false;
 
 // Give up on a stalled/slow real request after this long and fall back
 // to mock data, rather than leaving the UI's loading state hanging.
@@ -123,27 +123,27 @@ async function requestFixtures(endpoint) {
     console.log('API key present:', Boolean(API_KEY));
   }
 
-  if (FORCE_MOCK_FALLBACK) {
+    if (SIMULATE_FAILURE) {
+    const err = new Error('footballApi: SIMULATE_FAILURE is enabled');
+
     if (__DEV__) {
-      console.log('Data source: MOCK (FORCE_MOCK_FALLBACK is true)');
+      console.log('Throwing: SIMULATE_FAILURE is true');
       console.groupEnd();
     }
-    await networkDelay();
-    return getMockFallback();
+
+    throw err;
   }
 
   if (!API_KEY) {
-    // No key configured — go straight to mock data rather than issuing
-    // a request we already know the provider will reject.
-    console.warn(
-      'footballApi: EXPO_PUBLIC_API_FOOTBALL_KEY is not set — falling back to mock match data.'
-    );
-    if (__DEV__) {
-      console.log('Data source: MOCK (no API key configured)');
-      console.groupEnd();
-    }
-    return getMockFallback();
+  const err = new Error('footballApi: EXPO_PUBLIC_API_FOOTBALL_KEY is not set');
+
+  if (__DEV__) {
+    console.log('Throwing: no API key configured');
+    console.groupEnd();
   }
+
+  throw err;
+}
 
   if (__DEV__) {
     console.log('Endpoint:', endpoint);
@@ -189,18 +189,19 @@ async function requestFixtures(endpoint) {
 
     return matches;
   } catch (err) {
-    // Any failure here — network error, timeout, bad status, malformed
-    // payload — falls back to mock data rather than surfacing an error
-    // all the way up to the UI. Keeps the app visually identical and
-    // fully functional even when the real API is unreachable.
-    console.warn('footballApi: falling back to mock data —', err.message);
-    if (__DEV__) {
-      console.log('Data source: MOCK (fallback due to error)');
-      console.log('Fallback reason:', err.message);
-      console.groupEnd();
-    }
-    return getMockFallback();
-  } finally {
+  const isTimeout = err.name === 'AbortError';
+
+  const finalErr = isTimeout
+    ? new Error(`footballApi: request timed out after ${REQUEST_TIMEOUT_MS}ms`)
+    : err;
+
+  if (__DEV__) {
+    console.log('Throwing due to error:', finalErr.message);
+    console.groupEnd();
+  }
+
+  throw finalErr;
+} finally {
     clearTimeout(timeoutId);
   }
 }
