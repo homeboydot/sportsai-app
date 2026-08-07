@@ -54,7 +54,8 @@ const API_KEY = process.env.EXPO_PUBLIC_API_FOOTBALL_KEY;
 // Toggle to true locally to force the mock-data fallback path — useful
 // for exercising loading/error handling without touching your real key
 // or network connection.
-const SIMULATE_FAILURE = true;
+const SIMULATE_FAILURE = false;
+
 // Give up on a stalled/slow real request after this long and fall back
 // to mock data, rather than leaving the UI's loading state hanging.
 const REQUEST_TIMEOUT_MS = 8000;

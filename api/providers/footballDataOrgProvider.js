@@ -33,6 +33,22 @@ const REQUEST_TIMEOUT_MS = 8000;
 // Built per-call (not frozen at module load) so "today" is always
 // accurate even if the app stays open across midnight.
 
+// Competitions used as the per-competition fallback data source, when
+// the global /matches endpoint legitimately returns zero results for
+// today's date range (a known football-data.org behavior — the global
+// endpoint is often sparse even when individual competitions have
+// plenty of fixtures). All available on the football-data.org Tier One
+// plan. Queried sequentially, one at a time, stopping at the first
+// competition that returns matches — see requestCompetitionFallback().
+const FALLBACK_COMPETITIONS = [
+  'PL',   // Premier League
+  'PD',   // La Liga
+  'SA',   // Serie A
+  'BL1',  // Bundesliga
+  'FL1',  // Ligue 1
+  'BSA',  // Brazilian Serie A
+];
+
 function getTodayDateString() {
   const now = new Date();
   const yyyy = now.getFullYear();
@@ -57,6 +73,14 @@ function buildTodayFixturesUrl() {
 function buildFinishedMatchesUrl() {
   const today = getTodayDateString();
   return `${FOOTBALL_DATA_ORG_BASE_URL}/matches?dateFrom=${today}&dateTo=${today}&status=FINISHED`;
+}
+
+// Per-competition endpoint used by the fallback path below. Scoped to
+// today's date range — without dateFrom/dateTo this endpoint returns
+// the entire season (e.g. 380 matches) instead of today's fixtures.
+function buildCompetitionMatchesUrl(code, status) {
+  const today = getTodayDateString();
+  return `${FOOTBALL_DATA_ORG_BASE_URL}/competitions/${code}/matches?status=${status}&dateFrom=${today}&dateTo=${today}`;
 }
 
 // ---------------------------------------------------------------------
@@ -100,36 +124,22 @@ function normalizeMatch(match) {
 }
 
 // ---------------------------------------------------------------------
-// Shared request core
+// Shared low-level request core
 // ---------------------------------------------------------------------
 
 /**
- * Shared request core used by all three exported fetch functions below.
- * Handles the API key check, timeout, real request, response
- * validation, normalization, __DEV__ diagnostics, and mock fallback —
- * mirroring the pattern already established in api/footballApi.js so
- * this provider behaves consistently with the one currently in use.
+ * Performs the raw HTTP request against football-data.org and returns
+ * the parsed `matches` array from the response, or throws. Contains no
+ * fallback logic of its own — both the global-endpoint path and the
+ * per-competition fallback path call this, so the fetch/timeout/header/
+ * response-shape handling only exists in one place.
  *
- * @param {() => string} buildUrl - builds the endpoint URL for this request.
+ * @param {string} endpoint
  * @param {string} label - short name used in diagnostics/warnings.
- * @returns {Promise<Array>} matches shaped per the shared provider contract.
+ * @returns {Promise<Array>} raw (not yet normalized) match records.
+ * @throws {Error} on a non-OK response, malformed payload, or timeout.
  */
-async function requestMatches(buildUrl, label) {
-  if (!API_KEY) {
-    console.warn(
-      `footballDataOrgProvider: EXPO_PUBLIC_FOOTBALL_DATA_ORG_KEY is not set — ${label} falling back to mock match data.`
-    );
-    return getMockFallback();
-  }
-
-  const endpoint = buildUrl();
-
-  if (__DEV__) {
-    console.group(`[footballDataOrgProvider] ${label}`);
-    console.log('API key present:', Boolean(API_KEY));
-    console.log('Endpoint:', endpoint);
-  }
-
+async function performRequest(endpoint, label) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -147,7 +157,7 @@ async function requestMatches(buildUrl, label) {
     // --------------------------------------------------------------------
 
     if (__DEV__) {
-      console.log('Response status:', response.status);
+      console.log(`[footballDataOrgProvider] ${label} response status:`, response.status);
     }
 
     if (!response.ok) {
@@ -161,34 +171,179 @@ async function requestMatches(buildUrl, label) {
       // plan restrictions, etc.) inside the JSON body rather than via
       // HTTP status — surfacing this proactively, since a similar gap
       // in api/footballApi.js's diagnostics was the root cause of a
-      // recent debugging session.
-      console.log('Errors field:', json?.errors);
-      console.log('Result set count:', json?.resultSet?.count);
+      // past debugging session.
+      console.log(`[footballDataOrgProvider] ${label} errors field:`, json?.errors);
+      console.log(`[footballDataOrgProvider] ${label} resultSet.count:`, json?.resultSet?.count);
     }
 
     if (!Array.isArray(json?.matches)) {
       throw new Error(`footballDataOrgProvider: ${label} unexpected response shape from football-data.org`);
     }
 
-    const matches = json.matches.map(normalizeMatch);
+    return json.matches;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Global-endpoint request (first attempt)
+// ---------------------------------------------------------------------
+
+/**
+ * Tries the global /matches endpoint. Returns a normalized array on
+ * success (which may legitimately be empty), or throws on a real
+ * failure. No mock fallback here — that decision belongs to the caller.
+ */
+async function requestGlobalMatches(buildUrl, label) {
+  const endpoint = buildUrl();
+
+  if (__DEV__) {
+    console.group(`[footballDataOrgProvider] ${label}`);
+    console.log('API key present:', Boolean(API_KEY));
+    console.log('Endpoint:', endpoint);
+  }
+
+  try {
+    const rawMatches = await performRequest(endpoint, label);
+    const matches = rawMatches.map(normalizeMatch);
 
     if (__DEV__) {
       console.log('Matches returned:', matches.length);
-      console.log('Data source: REAL football-data.org');
       console.groupEnd();
     }
 
     return matches;
   } catch (err) {
-    console.warn(`footballDataOrgProvider: ${label} falling back to mock data —`, err.message);
     if (__DEV__) {
-      console.log('Data source: MOCK (fallback due to error)');
-      console.log('Fallback reason:', err.message);
+      console.log('Global endpoint failed:', err.message);
       console.groupEnd();
     }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Per-competition fallback (used only when the global endpoint
+// legitimately returns zero results)
+// ---------------------------------------------------------------------
+
+/**
+ * Fetches one competition's matches for the given status, scoped to
+ * today's date range. Never throws — if this competition's request
+ * fails, it's logged and an empty array is returned, so one bad
+ * competition can't take down the sequential fallback loop.
+ */
+async function requestCompetitionMatches(code, status, label) {
+  const endpoint = buildCompetitionMatchesUrl(code, status);
+  try {
+    const rawMatches = await performRequest(endpoint, `${label}:${code}`);
+    return rawMatches.map(normalizeMatch);
+  } catch (err) {
+    if (__DEV__) {
+      console.warn(`[footballDataOrgProvider] ${label}: competition ${code} failed —`, err.message);
+    }
+    return [];
+  }
+}
+
+/**
+ * Queries FALLBACK_COMPETITIONS one at a time, in order, stopping as
+ * soon as a competition returns matches. Used when the global endpoint
+ * succeeds but legitimately returns zero matches for today. Sequential
+ * (not parallel) so a typical "some competition has matches" case only
+ * costs a handful of requests instead of always querying every
+ * competition — important on football-data.org's free-plan rate limit.
+ *
+ * @param {string} status - 'LIVE' | 'SCHEDULED' | 'FINISHED'
+ * @param {string} label - short name for diagnostics.
+ * @returns {Promise<Array>} normalized matches from the first
+ *   competition with results, or an empty array if none have any.
+ */
+async function requestCompetitionFallback(status, label) {
+  if (__DEV__) {
+    console.log(
+      `[footballDataOrgProvider] ${label}: global endpoint returned 0 — trying per-competition fallback sequentially (${FALLBACK_COMPETITIONS.join(', ')})`
+    );
+  }
+
+  for (const code of FALLBACK_COMPETITIONS) {
+    const matches = await requestCompetitionMatches(code, status, label);
+
+    if (matches.length > 0) {
+      if (__DEV__) {
+        console.log(
+          `[footballDataOrgProvider] ${label}: competition ${code} returned ${matches.length} matches — stopping fallback here`
+        );
+      }
+      return matches;
+    }
+
+    if (__DEV__) {
+      console.log(`[footballDataOrgProvider] ${label}: competition ${code} returned 0 — trying next competition`);
+    }
+  }
+
+  if (__DEV__) {
+    console.log(`[footballDataOrgProvider] ${label}: all competitions returned 0 matches`);
+  }
+
+  return [];
+}
+
+// ---------------------------------------------------------------------
+// Top-level orchestrator — global endpoint, then competition fallback
+// on legitimate zero, then mock data as the last resort on real failure
+// ---------------------------------------------------------------------
+
+/**
+ * @param {() => string} buildUrl - builds the global endpoint URL.
+ * @param {string} status - 'LIVE' | 'SCHEDULED' | 'FINISHED', used for
+ *   the per-competition fallback URLs.
+ * @param {string} label - short name used in diagnostics/warnings.
+ * @returns {Promise<Array>} matches shaped per the shared provider contract.
+ */
+async function requestMatches(buildUrl, status, label) {
+  if (!API_KEY) {
+    console.warn(
+      `footballDataOrgProvider: EXPO_PUBLIC_FOOTBALL_DATA_ORG_KEY is not set — ${label} falling back to mock match data.`
+    );
     return getMockFallback();
-  } finally {
-    clearTimeout(timeoutId);
+  }
+
+  try {
+    const matches = await requestGlobalMatches(buildUrl, label);
+
+    if (matches.length > 0) {
+      if (__DEV__) {
+        console.log(`[footballDataOrgProvider] ${label}: Data source: REAL football-data.org (global endpoint)`);
+      }
+      return matches;
+    }
+
+    // Global endpoint succeeded but legitimately returned zero — try
+    // the per-competition fallback. If that's also empty, it's still a
+    // real (not mock) empty result, per the same "empty isn't failure"
+    // rule already used in api/footballApi.js.
+    const fallbackMatches = await requestCompetitionFallback(status, label);
+
+    if (__DEV__) {
+      console.log(
+        `[footballDataOrgProvider] ${label}: Data source: REAL football-data.org (competition fallback, ${fallbackMatches.length} matches)`
+      );
+    }
+
+    return fallbackMatches;
+  } catch (err) {
+    // A real failure — network error, bad status, malformed payload,
+    // or timeout, from the global endpoint itself. Falls back to mock
+    // data, unchanged from before.
+    console.warn(`footballDataOrgProvider: ${label} falling back to mock data —`, err.message);
+    if (__DEV__) {
+      console.log(`[footballDataOrgProvider] ${label}: Data source: MOCK (fallback due to error)`);
+      console.log(`[footballDataOrgProvider] ${label}: Fallback reason:`, err.message);
+    }
+    return getMockFallback();
   }
 }
 
@@ -200,26 +355,32 @@ async function requestMatches(buildUrl, label) {
 /**
  * Fetch all matches currently live.
  * Endpoint: GET {FOOTBALL_DATA_ORG_BASE_URL}/matches?status=LIVE
+ * Falls back to per-competition LIVE queries (sequential) if the global
+ * endpoint legitimately returns zero.
  * @returns {Promise<Array>}
  */
 export async function fetchLiveMatches() {
-  return requestMatches(buildLiveMatchesUrl, 'fetchLiveMatches');
+  return requestMatches(buildLiveMatchesUrl, 'LIVE', 'fetchLiveMatches');
 }
 
 /**
  * Fetch today's fixtures that haven't started yet ("upcoming").
  * Endpoint: GET {FOOTBALL_DATA_ORG_BASE_URL}/matches?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD&status=SCHEDULED
+ * Falls back to per-competition SCHEDULED queries (sequential) if the
+ * global endpoint legitimately returns zero.
  * @returns {Promise<Array>}
  */
 export async function fetchTodayFixtures() {
-  return requestMatches(buildTodayFixturesUrl, 'fetchTodayFixtures');
+  return requestMatches(buildTodayFixturesUrl, 'SCHEDULED', 'fetchTodayFixtures');
 }
 
 /**
  * Fetch today's fixtures that have finished.
  * Endpoint: GET {FOOTBALL_DATA_ORG_BASE_URL}/matches?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD&status=FINISHED
+ * Falls back to per-competition FINISHED queries (sequential) if the
+ * global endpoint legitimately returns zero.
  * @returns {Promise<Array>}
  */
 export async function fetchFinishedMatches() {
-  return requestMatches(buildFinishedMatchesUrl, 'fetchFinishedMatches');
+  return requestMatches(buildFinishedMatchesUrl, 'FINISHED', 'fetchFinishedMatches');
 }

@@ -1,11 +1,17 @@
 // hooks/useLiveMatches.js
 //
-// Single reusable hook for consuming live match data. Wraps
+// Single reusable hook for consuming match data: live matches, today's
+// upcoming fixtures, and today's finished fixtures. Wraps
 // services/matchesService.js with loading/error state, automatic
-// polling, and a manual refresh() so screens/components stop
-// hand-rolling their own useEffect + useState fetch boilerplate.
+// polling, and a manual refresh().
 //
-// Polling behavior:
+// Backward compatibility: the hook still returns `matches` (identical
+// to `liveMatches`) so existing screens/components that destructure
+// `{ matches, loading, error, refresh }` continue to work exactly as
+// before, unmodified. New consumers can use `liveMatches`,
+// `todayFixtures`, and `finishedMatches` directly.
+//
+// Polling behavior (unchanged from before):
 //   - Fetches immediately on mount.
 //   - Automatically refetches every POLL_INTERVAL_MS (30s).
 //   - Exactly one interval is ever active per hook instance — it is
@@ -13,25 +19,34 @@
 //     one is created, in case the effect re-runs).
 //   - Overlapping requests are prevented: if a fetch (auto or manual)
 //     is already in flight, a new one is skipped rather than queued.
+//     All three datasets are fetched together, in parallel, under this
+//     same single guard — there is still only ever one fetch "in
+//     flight" from the hook's perspective at any time.
 //
 // Usage:
-//   const { matches, loading, error, refresh } = useLiveMatches({ limit: 4 });
+//   const { matches, liveMatches, todayFixtures, finishedMatches, loading, error, refresh } = useLiveMatches({ limit: 4 });
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getLiveMatches } from '../services/matchesService';
+import { getLiveMatches, getTodayFixtures, getFinishedMatches } from '../services/matchesService';
 
 // How often the hook automatically refetches while mounted.
 const POLL_INTERVAL_MS = 30000;
 
 /**
  * @param {Object} [options]
- * @param {number} [options.limit] - passed straight through to matchesService.
+ * @param {number} [options.limit] - passed straight through to matchesService,
+ *   applied to the live-matches dataset only (preserves existing behavior).
  * @param {boolean} [options.enabled=true] - set to false to skip fetching
  *   and polling entirely (e.g. when a caller supplies its own data via props).
- * @returns {{ matches: Array, loading: boolean, error: Error|null, refresh: () => void }}
+ * @returns {{
+ *   matches: Array, liveMatches: Array, todayFixtures: Array, finishedMatches: Array,
+ *   loading: boolean, error: Error|null, refresh: () => void
+ * }}
  */
 export default function useLiveMatches({ limit, enabled = true } = {}) {
-  const [matches, setMatches] = useState([]);
+  const [liveMatches, setLiveMatches] = useState([]);
+  const [todayFixtures, setTodayFixtures] = useState([]);
+  const [finishedMatches, setFinishedMatches] = useState([]);
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState(null);
 
@@ -40,7 +55,10 @@ export default function useLiveMatches({ limit, enabled = true } = {}) {
   const isMountedRef = useRef(true);
 
   // Guards against overlapping requests: if a fetch is already running
-  // (auto or manual), a new one is skipped rather than started.
+  // (auto or manual), a new one is skipped rather than started. This is
+  // the exact same single guard as before — now covering all three
+  // datasets fetched together as one unit, so there is still no way to
+  // have more than one fetch in flight at a time.
   const isFetchingRef = useRef(false);
 
   // Holds the single active polling interval id, so it can always be
@@ -69,10 +87,20 @@ export default function useLiveMatches({ limit, enabled = true } = {}) {
       setLoading(true);
       setError(null);
 
-      return getLiveMatches({ limit })
-        .then((data) => {
+      // All three datasets are fetched in parallel under the same
+      // isFetchingRef guard and the same loading/error state as before
+      // — this does not create any additional overlap risk, since it's
+      // still exactly one "fetch operation" from the hook's perspective.
+      return Promise.all([
+        getLiveMatches({ limit }),
+        getTodayFixtures(),
+        getFinishedMatches(),
+      ])
+        .then(([live, upcoming, finished]) => {
           if (isMountedRef.current) {
-            setMatches(data);
+            setLiveMatches(live);
+            setTodayFixtures(upcoming);
+            setFinishedMatches(finished);
           }
         })
         .catch((err) => {
@@ -134,5 +162,16 @@ export default function useLiveMatches({ limit, enabled = true } = {}) {
     };
   }, [enabled, load]);
 
-  return { matches, loading, error, refresh };
+  return {
+    // `matches` is preserved as an alias for `liveMatches` so existing
+    // screens/components that destructure `{ matches }` keep working
+    // exactly as before, with zero changes required on their end.
+    matches: liveMatches,
+    liveMatches,
+    todayFixtures,
+    finishedMatches,
+    loading,
+    error,
+    refresh,
+  };
 }
