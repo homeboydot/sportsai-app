@@ -19,9 +19,15 @@
 //     one is created, in case the effect re-runs).
 //   - Overlapping requests are prevented: if a fetch (auto or manual)
 //     is already in flight, a new one is skipped rather than queued.
-//     All three datasets are fetched together, in parallel, under this
-//     same single guard — there is still only ever one fetch "in
-//     flight" from the hook's perspective at any time.
+//
+// Live/today/finished are now fetched SEQUENTIALLY (not via
+// Promise.all) within one load() call. Each of the three can trigger
+// its own football-data.org fallback chain (global endpoint + up to 6
+// competition requests) — running them concurrently let three
+// independent fallback chains race each other and collectively exceed
+// football-data.org's free-tier rate limit (HTTP 429). Awaiting them
+// one at a time guarantees at most one fallback chain is ever in
+// flight, without changing loading/error semantics or the guards above.
 //
 // Usage:
 //   const { matches, liveMatches, todayFixtures, finishedMatches, loading, error, refresh } = useLiveMatches({ limit: 4 });
@@ -55,10 +61,7 @@ export default function useLiveMatches({ limit, enabled = true } = {}) {
   const isMountedRef = useRef(true);
 
   // Guards against overlapping requests: if a fetch is already running
-  // (auto or manual), a new one is skipped rather than started. This is
-  // the exact same single guard as before — now covering all three
-  // datasets fetched together as one unit, so there is still no way to
-  // have more than one fetch in flight at a time.
+  // (auto or manual), a new one is skipped rather than started.
   const isFetchingRef = useRef(false);
 
   // Holds the single active polling interval id, so it can always be
@@ -87,33 +90,36 @@ export default function useLiveMatches({ limit, enabled = true } = {}) {
       setLoading(true);
       setError(null);
 
-      // All three datasets are fetched in parallel under the same
-      // isFetchingRef guard and the same loading/error state as before
-      // — this does not create any additional overlap risk, since it's
-      // still exactly one "fetch operation" from the hook's perspective.
-      return Promise.all([
-        getLiveMatches({ limit }),
-        getTodayFixtures(),
-        getFinishedMatches(),
-      ])
-        .then(([live, upcoming, finished]) => {
+      // Sequential, not Promise.all — see file header comment for why.
+      // Each dataset's state is set as soon as it resolves, rather than
+      // waiting for all three, so the UI can populate progressively.
+      return (async () => {
+        try {
+          const live = await getLiveMatches({ limit });
           if (isMountedRef.current) {
             setLiveMatches(live);
+          }
+
+          const upcoming = await getTodayFixtures();
+          if (isMountedRef.current) {
             setTodayFixtures(upcoming);
+          }
+
+          const finished = await getFinishedMatches();
+          if (isMountedRef.current) {
             setFinishedMatches(finished);
           }
-        })
-        .catch((err) => {
+        } catch (err) {
           if (isMountedRef.current) {
             setError(err instanceof Error ? err : new Error('Failed to load matches'));
           }
-        })
-        .finally(() => {
+        } finally {
           isFetchingRef.current = false;
           if (isMountedRef.current) {
             setLoading(false);
           }
-        });
+        }
+      })();
     },
     [limit, enabled]
   );
