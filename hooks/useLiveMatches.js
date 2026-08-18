@@ -64,6 +64,17 @@ export default function useLiveMatches({ limit, enabled = true } = {}) {
   // (auto or manual), a new one is skipped rather than started.
   const isFetchingRef = useRef(false);
 
+  // True until the first load attempt (success or failure) has
+  // completed. Used so routine background auto-refreshes don't flip
+  // `loading` back to true once there's already data on screen — only
+  // the very first load (nothing to show yet) or an explicit manual
+  // refresh should show a loading state. Without this, every 30s poll
+  // would hide the already-loaded matches behind "Loading…" text for
+  // the duration of the fetch, which is especially jarring now that a
+  // fetch can occasionally take tens of seconds under football-data.org
+  // rate-limit pacing.
+  const isInitialLoadRef = useRef(true);
+
   // Holds the single active polling interval id, so it can always be
   // cleared — both on unmount and defensively before a new one starts.
   const intervalRef = useRef(null);
@@ -87,7 +98,13 @@ export default function useLiveMatches({ limit, enabled = true } = {}) {
       }
 
       isFetchingRef.current = true;
-      setLoading(true);
+
+      // Only surface a loading state for the first-ever load or an
+      // explicit manual refresh — a routine background auto-refresh
+      // keeps showing whatever's already on screen while it fetches.
+      if (isInitialLoadRef.current || trigger === 'manual') {
+        setLoading(true);
+      }
       setError(null);
 
       // Sequential, not Promise.all — see file header comment for why.
@@ -115,6 +132,7 @@ export default function useLiveMatches({ limit, enabled = true } = {}) {
           }
         } finally {
           isFetchingRef.current = false;
+          isInitialLoadRef.current = false;
           if (isMountedRef.current) {
             setLoading(false);
           }

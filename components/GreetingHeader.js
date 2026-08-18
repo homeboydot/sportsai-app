@@ -16,7 +16,7 @@ export default function GreetingHeader({ name = 'Feranmi', greeting = 'Good Even
         <Text style={styles.name}>{name}</Text>
         <View style={styles.statusRow}>
           <View style={styles.dot} />
-          <Text style={styles.statusText}>Your assistant is watching 6 leagues tonight</Text>
+          <Text style={styles.statusText}>Your assistant is watching 12 leagues tonight</Text>
         </View>
       </View>
 

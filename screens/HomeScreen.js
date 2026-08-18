@@ -11,7 +11,7 @@ import LiveMatchesSection from '../components/LiveMatchesSection';
 import QuickActions from '../components/QuickActions';
 import { colors, gradients } from '../theme/tokens';
 
-export default function HomeScreen() {
+export default function HomeScreen({ navigation }) {
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar barStyle="light-content" />
@@ -27,10 +27,22 @@ export default function HomeScreen() {
       >
         <GreetingHeader name="Feranmi" greeting="Good Evening" />
         <MatchSummaryCard />
-        <BuildTicketButton onPress={() => {}} />
-        <AIInsightCard onExplain={() => {}} />
+        <BuildTicketButton onPress={() => navigation.navigate('TicketBuilder')} />
+        <AIInsightCard onExplain={() => navigation.navigate('AIChat')} />
         <LiveMatchesSection />
-        <QuickActions onSelect={() => {}} />
+        <QuickActions
+          onSelect={(actionId) => {
+            // 'compare' (Compare Teams) and 'stats' (Player Stats) don't
+            // have a destination screen yet — intentionally left as a
+            // no-op rather than pointing them somewhere misleading.
+            // See project notes for what's still pending here.
+            if (actionId === 'ask') {
+              navigation.navigate('AIChat');
+            } else if (actionId === 'saved') {
+              navigation.navigate('TicketBuilder');
+            }
+          }}
+        />
       </ScrollView>
     </SafeAreaView>
   );

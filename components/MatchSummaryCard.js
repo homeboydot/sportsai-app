@@ -1,22 +1,66 @@
 // components/MatchSummaryCard.js
 // A single, glanceable read on "what matters tonight" — not a betting
 // slip. Framed as a briefing, the way an assistant would summarize a day.
+//
+// Previously this card took headline/subline/stats as props with
+// hardcoded fake defaults ("12 matches, 6 leagues, 4 key games", a
+// fabricated "Merseyside derby" headline) — it never actually reflected
+// what was happening. Now it reads the same shared match data every
+// other real screen uses (contexts/LiveMatchesContext.js) and computes
+// real counts. "Key games" was dropped rather than kept as a fake
+// stat — there's no real signal in the data for match "importance,"
+// so making one up would just be a different kind of fake number. It's
+// replaced with "Live now", which is a real, honestly-computable count.
 
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import GlassCard from './GlassCard';
+import { useLiveMatchesContext } from '../contexts/LiveMatchesContext';
 import { colors, type, spacing, radius } from '../theme/tokens';
 
-export default function MatchSummaryCard({
-  headline = "Tonight's slate is stacked",
-  subline = '4 top-6 clashes across Europe, headlined by the Merseyside derby.',
-  stats = [
-    { label: 'Matches', value: '12' },
-    { label: 'Leagues', value: '6' },
-    { label: 'Key games', value: '4' },
-  ],
-}) {
+export default function MatchSummaryCard() {
+  const { liveMatches, todayFixtures, finishedMatches, loading } = useLiveMatchesContext();
+
+  const liveCount = liveMatches.length;
+  const totalToday = liveCount + todayFixtures.length + finishedMatches.length;
+
+  const leagueCount = new Set(
+    [...liveMatches, ...todayFixtures, ...finishedMatches]
+      .map((m) => m.league)
+      .filter(Boolean)
+  ).size;
+
+  // Only show the true first-load "nothing yet" state before any data
+  // has ever arrived — once there's been at least one successful load,
+  // keep showing real (possibly zero) numbers rather than flashing back
+  // to a loading message on background refreshes (same reasoning as
+  // hooks/useLiveMatches.js's isInitialLoadRef).
+  const isFirstLoad = loading && totalToday === 0;
+
+  let headline;
+  let subline;
+
+  if (isFirstLoad) {
+    headline = "Loading today's matches…";
+    subline = 'Pulling in fixtures now.';
+  } else if (liveCount > 0) {
+    headline = `${liveCount} match${liveCount === 1 ? '' : 'es'} live right now`;
+    subline = `${totalToday} total today across ${leagueCount} league${leagueCount === 1 ? '' : 's'}.`;
+  } else if (totalToday > 0) {
+    headline = `${totalToday} match${totalToday === 1 ? '' : 'es'} today`;
+    subline = `Across ${leagueCount} league${leagueCount === 1 ? '' : 's'} — none live at the moment.`;
+  } else {
+    headline = 'No matches today';
+    subline = 'Nothing scheduled in covered leagues right now — check back later.';
+  }
+
+  const stats = [
+    { label: 'Matches', value: String(totalToday) },
+    { label: 'Leagues', value: String(leagueCount) },
+    { label: 'Live now', value: String(liveCount) },
+  ];
+
   return (
     <GlassCard style={{ marginHorizontal: spacing.xl, marginTop: spacing.lg }}>
       <View style={styles.topRow}>

@@ -41,9 +41,77 @@ const REQUEST_TIMEOUT_MS = 8000;
 // very next call picks that up immediately rather than being masked by
 // a stale mock entry for up to CACHE_TTL_MS.
 
-const CACHE_TTL_MS = 60 * 1000; // 60s — roughly 2x useLiveMatches.js's 30s poll interval
+// football-data.org's own free-tier data is itself only refreshed
+// every 5-10 minutes on their end (confirmed via their docs/pricing
+// page — real-time updates are a paid-tier feature). A 60s cache was
+// pointless against that: it expired long before the underlying data
+// could have changed, forcing a fresh, expensive, rate-limited sweep
+// (up to ~26 requests across today's-fixtures + finished-matches,
+// against a 9-per-minute budget) on almost every single 30s poll —
+// which is exactly why a load could take a minute or more. 4 minutes
+// keeps results comfortably fresher than the source data can even
+// change, while letting most poll cycles hit cache instead of network.
+const CACHE_TTL_MS = 4 * 60 * 1000;
 
 const cache = new Map();
+
+// ---------------------------------------------------------------------
+// Shared rate limiter
+// ---------------------------------------------------------------------
+// football-data.org's free tier allows 10 requests/minute. Without this,
+// a single load() cycle in useLiveMatches.js (live + upcoming + finished,
+// each capable of 1 global + 6 competition requests) can fire up to 21
+// requests within a few seconds — blowing past the limit almost
+// immediately, triggering a 429, and causing this provider to give up
+// and fall back to mock data even though football-data.org itself is
+// fine and would have returned real data if paced correctly.
+//
+// This queue is shared across ALL exported fetch functions (live,
+// today, finished) since they all ultimately call performRequest()
+// below — so the 9-per-minute budget applies to the whole provider,
+// not per-function.
+//
+// Capped at 9 (not 10) to leave a small safety margin against clock
+// drift/timing edge cases.
+const MAX_REQUESTS_PER_WINDOW = 9;
+const RATE_WINDOW_MS = 60 * 1000;
+
+// Timestamps (ms) of requests made within the current rolling window.
+const requestTimestamps = [];
+
+/**
+ * Resolves once it's safe to make another football-data.org request
+ * without exceeding MAX_REQUESTS_PER_WINDOW in any rolling
+ * RATE_WINDOW_MS window. Reserves the slot immediately (records the
+ * timestamp) before returning, so back-to-back calls queue correctly
+ * even though this app's requests already run sequentially.
+ */
+async function waitForRateLimitSlot() {
+  const now = Date.now();
+
+  // Drop timestamps older than the rolling window — they no longer
+  // count against the limit.
+  while (requestTimestamps.length > 0 && now - requestTimestamps[0] > RATE_WINDOW_MS) {
+    requestTimestamps.shift();
+  }
+
+  if (requestTimestamps.length < MAX_REQUESTS_PER_WINDOW) {
+    requestTimestamps.push(Date.now());
+    return;
+  }
+
+  // Window is full — wait until the oldest request in it ages out,
+  // plus a small buffer, then try again.
+  const oldest = requestTimestamps[0];
+  const waitMs = RATE_WINDOW_MS - (now - oldest) + 250;
+
+  if (__DEV__) {
+    console.log(`[footballDataOrgProvider] rate limit: pacing request, waiting ${waitMs}ms`);
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, Math.max(waitMs, 0)));
+  return waitForRateLimitSlot();
+}
 
 /**
  * Returns the cached data for `cacheKey` if present and still within
@@ -87,17 +155,26 @@ function setCached(cacheKey, data) {
 // Built per-call (not frozen at module load) so "today" is always
 // accurate even if the app stays open across midnight.
 
-// Competitions used as the per-competition fallback data source. All
-// available on the football-data.org Tier One plan. Queried
-// sequentially, one at a time, stopping at the first competition that
-// returns matches, or immediately on a 429 — see requestCompetitionFallback().
+// Competitions used as the per-competition fallback data source — the
+// full set of 12 competitions covered by football-data.org's free
+// tier (anything outside this list, e.g. MLS or smaller leagues, isn't
+// available on this plan regardless of fallback logic). Queried
+// sequentially, one at a time; results from every competition are
+// combined, not just the first one that returns matches — see
+// requestCompetitionFallback() below.
 const FALLBACK_COMPETITIONS = [
   'PL',   // Premier League
   'PD',   // La Liga
   'SA',   // Serie A
   'BL1',  // Bundesliga
   'FL1',  // Ligue 1
+  'DED',  // Eredivisie
+  'PPL',  // Primeira Liga
+  'ELC',  // Championship
   'BSA',  // Brazilian Serie A
+  'CL',   // UEFA Champions League
+  'WC',   // FIFA World Cup
+  'EC',   // UEFA European Championship
 ];
 
 function getTodayDateString() {
@@ -157,15 +234,53 @@ function getMockFallback() {
 // ---------------------------------------------------------------------
 
 /**
+ * football-data.org's free tier does not populate `minute` in real time
+ * for in-play matches — live minute tracking is a paid-tier feature, so
+ * the field stays 0/null while a match is actually being played (it only
+ * shows up reliably once a match is FINISHED). Rather than show a
+ * frozen "0'" for a match we know is live, estimate elapsed minutes
+ * from kickoff time (utcDate) as a best-effort approximation.
+ *
+ * This is an ESTIMATE, not the real live minute — it won't account for
+ * stoppage time, half-time pauses, or delays, and can drift from the
+ * actual match clock. It's meant to avoid a visibly-wrong "0'" next to
+ * a match that clearly has a live score, not to be precise to the
+ * second.
+ */
+function estimateMinuteFromKickoff(utcDate) {
+  if (!utcDate) return null;
+
+  const kickoffMs = new Date(utcDate).getTime();
+  if (Number.isNaN(kickoffMs)) return null;
+
+  const elapsedMs = Date.now() - kickoffMs;
+  if (elapsedMs < 0) return null; // hasn't kicked off yet by our clock
+
+  const elapsedMinutes = Math.floor(elapsedMs / 60000);
+  // Clamp so a match that's actually been over for a while (delayed
+  // status update) doesn't show something absurd like "247'".
+  return Math.min(elapsedMinutes, 90);
+}
+
+/**
  * Converts one football-data.org match record into this app's shared
  * normalized match shape. This is the only place that needs to change
  * if football-data.org's response format ever changes.
  */
 function normalizeMatch(match) {
+  const isLiveStatus = match.status === 'IN_PLAY' || match.status === 'PAUSED';
+  const hasRealMinute = typeof match.minute === 'number' && match.minute > 0;
+
+  const minute = hasRealMinute
+    ? match.minute
+    : isLiveStatus
+      ? estimateMinuteFromKickoff(match.utcDate) ?? 0
+      : match.minute ?? 0;
+
   return {
     id: String(match.id ?? ''),
     league: match.competition?.name ?? 'Unknown League',
-    minute: match.minute ?? 0,
+    minute,
     home: match.homeTeam?.name ?? 'Home',
     away: match.awayTeam?.name ?? 'Away',
     homeScore: match.score?.fullTime?.home ?? 0,
@@ -191,10 +306,16 @@ function normalizeMatch(match) {
  *
  * @param {string} endpoint
  * @param {string} label - short name used in diagnostics/warnings.
+ * @param {number} [attempt=1] - internal; used to allow exactly one
+ *   retry on a transient network error before giving up.
  * @returns {Promise<Array>} raw (not yet normalized) match records.
  * @throws {Error} on a non-OK response, malformed payload, or timeout.
  */
-async function performRequest(endpoint, label) {
+async function performRequest(endpoint, label, attempt = 1) {
+  // Pace this request against the shared 9-per-minute budget before
+  // touching the network at all. See waitForRateLimitSlot() above.
+  await waitForRateLimitSlot();
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -233,11 +354,30 @@ async function performRequest(endpoint, label) {
     }
 
     return json.matches;
+  } catch (err) {
+    const isTimeout = err.name === 'AbortError';
+    // A "real" HTTP failure (err.status set, e.g. 429/500) or a
+    // deliberate timeout should propagate immediately — retrying won't
+    // help either of those. A plain network-layer error (no status,
+    // fetch() itself rejected) is usually a brief connectivity blip —
+    // e.g. right after an Android app cold-starts and the OS network
+    // stack isn't fully ready — so it's worth one quick retry before
+    // giving up and letting it bubble up as a real failure.
+    const isTransientNetworkError = !isTimeout && !err.status;
+
+    if (isTransientNetworkError && attempt < 2) {
+      if (__DEV__) {
+        console.log(`[footballDataOrgProvider] ${label}: transient network error (${err.message}) — retrying once`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      return performRequest(endpoint, label, attempt + 1);
+    }
+
+    throw err;
   } finally {
     clearTimeout(timeoutId);
   }
 }
-
 // ---------------------------------------------------------------------
 // Global-endpoint request (first attempt)
 // ---------------------------------------------------------------------
@@ -309,9 +449,11 @@ async function requestCompetitionMatches(code, status, label) {
 }
 
 /**
- * Queries FALLBACK_COMPETITIONS one at a time, in order, stopping as
- * soon as a competition returns matches, OR as soon as a competition is
- * rate-limited (HTTP 429).
+ * Queries FALLBACK_COMPETITIONS one at a time, in order, combining
+ * matches from every competition that returns any — rather than
+ * stopping at the first one that does. Still stops immediately on a
+ * 429 (rate limited), since that signals we're already over budget and
+ * trying more competitions would only make it worse.
  *
  * @param {string} status - 'LIVE' | 'SCHEDULED' | 'FINISHED'
  * @param {string} label - short name for diagnostics.
@@ -329,6 +471,7 @@ async function requestCompetitionFallback(status, label) {
   }
 
   let anySucceeded = false;
+  const allMatches = [];
 
   for (const code of FALLBACK_COMPETITIONS) {
     const { matches, succeeded, rateLimited } = await requestCompetitionMatches(code, status, label);
@@ -340,10 +483,11 @@ async function requestCompetitionFallback(status, label) {
     if (matches.length > 0) {
       if (__DEV__) {
         console.log(
-          `[footballDataOrgProvider] ${label}: competition ${code} returned ${matches.length} matches — stopping fallback here`
+          `[footballDataOrgProvider] ${label}: competition ${code} returned ${matches.length} matches — continuing to check remaining competitions`
         );
       }
-      return { matches, anySucceeded };
+      allMatches.push(...matches);
+      continue;
     }
 
     if (rateLimited) {
@@ -361,10 +505,12 @@ async function requestCompetitionFallback(status, label) {
   }
 
   if (__DEV__) {
-    console.log(`[footballDataOrgProvider] ${label}: fallback finished with 0 matches (anySucceeded: ${anySucceeded})`);
+    console.log(
+      `[footballDataOrgProvider] ${label}: fallback finished with ${allMatches.length} total matches (anySucceeded: ${anySucceeded})`
+    );
   }
 
-  return { matches: [], anySucceeded };
+  return { matches: allMatches, anySucceeded };
 }
 
 // ---------------------------------------------------------------------

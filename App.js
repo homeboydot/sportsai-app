@@ -17,6 +17,7 @@ import {
 } from '@expo-google-fonts/jetbrains-mono';
 
 import AppNavigator from './navigation/AppNavigator';
+import { LiveMatchesProvider } from './contexts/LiveMatchesContext';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -38,7 +39,9 @@ export default function App() {
 
   return (
     <View style={{ flex: 1 }} onLayout={onLayout}>
-      <AppNavigator />
+      <LiveMatchesProvider>
+        <AppNavigator />
+      </LiveMatchesProvider>
     </View>
   );
 }

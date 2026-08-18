@@ -5,11 +5,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import ScreenHeader from '../components/ScreenHeader';
 import LiveMatchCard from '../components/LiveMatchCard';
-import useLiveMatches from '../hooks/useLiveMatches';
+import { useLiveMatchesContext } from '../contexts/LiveMatchesContext';
 import { colors, type, spacing, gradients } from '../theme/tokens';
 
 export default function MatchesScreen() {
-  const { matches, loading, error, refresh } = useLiveMatches();
+  const { matches, loading, error, refresh } = useLiveMatchesContext();
 
   return (
     <SafeAreaView style={styles.root}>

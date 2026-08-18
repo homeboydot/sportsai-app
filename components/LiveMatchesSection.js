@@ -2,25 +2,26 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import LiveMatchCard from './LiveMatchCard';
-import useLiveMatches from '../hooks/useLiveMatches';
+import { useLiveMatchesContext } from '../contexts/LiveMatchesContext';
 import { colors, type, spacing } from '../theme/tokens';
 
 // Home's rail has always shown 4 matches (it's a preview, not the full
 // list) — that limit is preserved here exactly as it was when the data
-// was a local DEFAULT_MATCHES array.
+// was a local DEFAULT_MATCHES array. Applied as a local .slice() over
+// the shared context's full list, rather than a separately-limited
+// fetch — see contexts/LiveMatchesContext.js for why.
 const HOME_RAIL_LIMIT = 4;
 
 export default function LiveMatchesSection({ matches: matchesOverride }) {
-  // If a `matches` prop is explicitly passed in, use it as-is and skip
-  // fetching entirely — preserves the component's existing override
-  // behavior for any caller that wants to supply custom data.
+  // If a `matches` prop is explicitly passed in, use it as-is —
+  // preserves the component's existing override behavior for any
+  // caller that wants to supply custom data. The shared context still
+  // polls in the background regardless (other screens depend on it),
+  // this component just doesn't use its data in that case.
   const shouldFetch = !matchesOverride;
-  const { matches: fetchedMatches, loading, error } = useLiveMatches({
-    limit: HOME_RAIL_LIMIT,
-    enabled: shouldFetch,
-  });
+  const { liveMatches, loading, error } = useLiveMatchesContext();
 
-  const displayedMatches = matchesOverride || fetchedMatches;
+  const displayedMatches = matchesOverride || liveMatches.slice(0, HOME_RAIL_LIMIT);
 
 
   return (
