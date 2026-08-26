@@ -1,8 +1,10 @@
 // components/BuildTicketButton.js
-// The single most important tap target on the screen. Framed around
-// what the assistant DOES (builds a personalized ticket / plan from
-// analysis) rather than "place bet" language — this is the clearest
-// signal that the product is an analyst, not a bookmaker.
+// The single most important tap target on the screen. Navigates to the
+// real Ticket Builder screen (screens/TicketBuilderScreen.js) — manual
+// selection from real match data, no AI or predictions involved. Copy
+// here should stay honest about that; it previously said
+// "AI-assembled from tonight's data," which overstated what actually
+// happens when you tap it.
 
 import React, { useRef } from 'react';
 import { Text, StyleSheet, Animated, Pressable, View } from 'react-native';
@@ -13,7 +15,7 @@ import { colors, type, spacing, radius, shadow, gradients } from '../theme/token
 export default function BuildTicketButton({
   onPress,
   title = 'Build My Ticket',
-  subtitle = "AI-assembled from tonight's data",
+  subtitle = "Pick from today's real matches",
   icon = 'cpu',
   style,
 }) {

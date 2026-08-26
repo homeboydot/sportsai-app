@@ -1,19 +1,25 @@
 // screens/MatchesScreen.js
-import React from 'react';
+import React, { useState } from 'react';
 import { StyleSheet, ScrollView, StatusBar, SafeAreaView, View, Text, TouchableOpacity } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import ScreenHeader from '../components/ScreenHeader';
 import LiveMatchCard from '../components/LiveMatchCard';
+import CoverageNote from '../components/CoverageNote';
 import { useLiveMatchesContext } from '../contexts/LiveMatchesContext';
-import { colors, type, spacing, gradients } from '../theme/tokens';
+import { useFavorites } from '../contexts/FavoritesContext';
+import { colors, type, spacing, radius, gradients } from '../theme/tokens';
 
 export default function MatchesScreen() {
   const { matches, loading, error, refresh } = useLiveMatchesContext();
+  const { hasFavorites, isFavoriteMatch } = useFavorites();
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+
+  const displayedMatches = showFavoritesOnly ? matches.filter(isFavoriteMatch) : matches;
 
   return (
     <SafeAreaView style={styles.root}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle="light-content" backgroundColor={colors.bgBase} />
       <LinearGradient colors={gradients.ambient} style={StyleSheet.absoluteFill} />
 
       <ScrollView
@@ -23,8 +29,29 @@ export default function MatchesScreen() {
         <ScreenHeader
           eyebrow="Right now"
           title="Live Matches"
-          subtitle="Every match your assistant is tracking, updated in real time."
+          subtitle="Scores update roughly every few minutes — not instant, but real."
         />
+
+        <CoverageNote />
+
+        {hasFavorites && (
+          <View style={styles.toggleRow}>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              style={[styles.toggleButton, !showFavoritesOnly && styles.toggleButtonActive]}
+              onPress={() => setShowFavoritesOnly(false)}
+            >
+              <Text style={[styles.toggleText, !showFavoritesOnly && styles.toggleTextActive]}>All</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              style={[styles.toggleButton, showFavoritesOnly && styles.toggleButtonActive]}
+              onPress={() => setShowFavoritesOnly(true)}
+            >
+              <Text style={[styles.toggleText, showFavoritesOnly && styles.toggleTextActive]}>Favorites</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {loading && (
           <Text style={styles.statusText}>Loading live matches…</Text>
@@ -41,9 +68,17 @@ export default function MatchesScreen() {
 
         {!loading && !error && (
           <View style={styles.list}>
-            {matches.map((m) => (
-              <LiveMatchCard key={m.id} match={m} style={styles.fullWidthCard} />
-            ))}
+            {displayedMatches.length === 0 ? (
+              <Text style={styles.emptyText}>
+                {showFavoritesOnly
+                  ? 'None of your favorites are live right now.'
+                  : 'Nothing live right now in the leagues above — check back shortly.'}
+              </Text>
+            ) : (
+              displayedMatches.map((m) => (
+                <LiveMatchCard key={m.id} match={m} style={styles.fullWidthCard} />
+              ))
+            )}
           </View>
         )}
       </ScrollView>
@@ -63,6 +98,33 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     marginTop: spacing.lg,
   },
+  toggleRow: {
+    flexDirection: 'row',
+    marginHorizontal: spacing.xl,
+    marginTop: spacing.lg,
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.borderGlass,
+    padding: 4,
+  },
+  toggleButton: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+  },
+  toggleButtonActive: {
+    backgroundColor: colors.emerald,
+  },
+  toggleText: {
+    ...type.bodyMedium,
+    color: colors.textTertiary,
+    fontSize: 12.5,
+  },
+  toggleTextActive: {
+    color: colors.textOnEmerald,
+  },
   // Overrides LiveMatchCard's default fixed 172px rail width so it
   // reads correctly stacked full-width in a vertical list.
   fullWidthCard: {
@@ -76,6 +138,13 @@ const styles = StyleSheet.create({
     fontSize: 13.5,
     paddingHorizontal: spacing.xl,
     marginTop: spacing.lg,
+  },
+  emptyText: {
+    ...type.body,
+    color: colors.textTertiary,
+    fontSize: 13,
+    textAlign: 'center',
+    paddingVertical: spacing.xl,
   },
   errorBlock: {
     paddingHorizontal: spacing.xl,

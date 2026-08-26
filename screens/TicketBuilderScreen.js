@@ -1,21 +1,69 @@
 // screens/TicketBuilderScreen.js
-import React from 'react';
+//
+// This used to describe an "AI Analyst" process ("scans form, injuries,
+// weighs by model confidence...") that didn't exist anywhere in the
+// code — the "Create Analysis" button did nothing. There's no AI/stats
+// backend behind this app yet (see contexts/LiveMatchesContext.js and
+// the project notes for why), so rather than keep faking that, this is
+// now a real, working, zero-cost feature: pick matches from today's
+// actual data, copy them as a plain-text list, then paste that list
+// into whichever betting app you actually use to place picks manually.
+// No predictions, no confidence scores — just real matches you choose.
+
+import React, { useState } from 'react';
 import { StyleSheet, ScrollView, StatusBar, SafeAreaView, View, Text } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Feather } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
 
 import ScreenHeader from '../components/ScreenHeader';
-import GlassCard from '../components/GlassCard';
+import TicketMatchRow from '../components/TicketMatchRow';
 import BuildTicketButton from '../components/BuildTicketButton';
-import { colors, type, spacing, radius, gradients } from '../theme/tokens';
+import { useLiveMatchesContext } from '../contexts/LiveMatchesContext';
+import { colors, type, spacing, gradients } from '../theme/tokens';
 
-const STEPS = [
-  { id: 1, icon: 'search', text: 'Scans form, injuries, and matchup data across every league you follow' },
-  { id: 2, icon: 'cpu', text: 'Weighs selections by model confidence, not by hunches or hype' },
-  { id: 3, icon: 'file-text', text: 'Hands you a clear, explainable set of picks — never a guess' },
-];
+function formatTicketText(selectedMatches) {
+  const lines = selectedMatches.map((m, i) => {
+    const isLive = m.status === 'IN_PLAY' || m.status === 'PAUSED';
+    const scoreSuffix = isLive ? ` — LIVE ${m.minute}' (${m.homeScore}-${m.awayScore})` : '';
+    return `${i + 1}. ${m.home} vs ${m.away} (${m.league})${scoreSuffix}`;
+  });
+  return `My Ticket — ${selectedMatches.length} pick${selectedMatches.length === 1 ? '' : 's'}\n${lines.join('\n')}`;
+}
 
 export default function TicketBuilderScreen() {
+  const { liveMatches, todayFixtures, loading } = useLiveMatchesContext();
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [justCopied, setJustCopied] = useState(false);
+
+  // Live matches first (most relevant/urgent), then today's upcoming
+  // fixtures. Finished matches are intentionally excluded — nothing to
+  // pick there.
+  const allMatches = [...liveMatches, ...todayFixtures];
+
+  const toggleMatch = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+    setJustCopied(false);
+  };
+
+  const selectedMatches = allMatches.filter((m) => selectedIds.has(m.id));
+  const hasSelection = selectedMatches.length > 0;
+
+  const handleCopy = async () => {
+    if (!hasSelection) return;
+    await Clipboard.setStringAsync(formatTicketText(selectedMatches));
+    setJustCopied(true);
+  };
+
+  const isFirstLoad = loading && allMatches.length === 0;
+
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar barStyle="light-content" />
@@ -26,31 +74,43 @@ export default function TicketBuilderScreen() {
         contentContainerStyle={styles.scrollContent}
       >
         <ScreenHeader
-          eyebrow="Powered by your AI Analyst"
-          title="AI Ticket Builder"
-          subtitle="Build intelligent match selections using AI analysis."
+          eyebrow="Your picks, your way"
+          title="Ticket Builder"
+          subtitle="Tap matches from today's real card to build a list, then copy it to paste into your betting app."
         />
 
-        <GlassCard style={styles.stepsCard}>
-          {STEPS.map((step, i) => (
-            <View key={step.id} style={[styles.stepRow, i !== STEPS.length - 1 && styles.stepDivider]}>
-              <View style={styles.stepIcon}>
-                <Feather name={step.icon} size={15} color={colors.emerald} />
-              </View>
-              <Text style={styles.stepText}>{step.text}</Text>
-            </View>
-          ))}
-        </GlassCard>
+        <View style={styles.listBlock}>
+          {isFirstLoad ? (
+            <Text style={styles.statusText}>Loading today's matches…</Text>
+          ) : allMatches.length === 0 ? (
+            <Text style={styles.statusText}>No matches on today's card right now.</Text>
+          ) : (
+            allMatches.map((match) => (
+              <TicketMatchRow
+                key={match.id}
+                match={match}
+                selected={selectedIds.has(match.id)}
+                onToggle={toggleMatch}
+              />
+            ))
+          )}
+        </View>
 
         <BuildTicketButton
-          title="Create Analysis"
-          subtitle="Your assistant will build this from live data"
-          icon="sliders"
-          onPress={() => {}}
+          title={justCopied ? 'Copied!' : 'Copy My Ticket'}
+          subtitle={
+            hasSelection
+              ? `${selectedMatches.length} match${selectedMatches.length === 1 ? '' : 'es'} selected`
+              : 'Select matches above to build your ticket'
+          }
+          icon={justCopied ? 'check' : 'copy'}
+          onPress={handleCopy}
+          style={!hasSelection && styles.buttonDisabled}
         />
 
         <Text style={styles.footnote}>
-          No selections are placed automatically — you always review before anything is saved.
+          This copies a plain list of your picks — nothing is placed automatically, and this
+          doesn't connect to any betting platform directly. Paste it wherever you place bets.
         </Text>
       </ScrollView>
     </SafeAreaView>
@@ -65,36 +125,19 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingBottom: 160,
   },
-  stepsCard: {
+  listBlock: {
     marginHorizontal: spacing.xl,
     marginTop: spacing.lg,
   },
-  stepRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingBottom: spacing.md,
-    marginBottom: spacing.md,
-  },
-  stepDivider: {
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderGlass,
-  },
-  stepIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: radius.sm,
-    backgroundColor: colors.emeraldFaint,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: spacing.md,
-    marginTop: 1,
-  },
-  stepText: {
+  statusText: {
     ...type.body,
-    color: colors.textSecondary,
-    fontSize: 13.5,
-    lineHeight: 20,
-    flex: 1,
+    color: colors.textTertiary,
+    fontSize: 13,
+    textAlign: 'center',
+    paddingVertical: spacing.xl,
+  },
+  buttonDisabled: {
+    opacity: 0.5,
   },
   footnote: {
     ...type.body,

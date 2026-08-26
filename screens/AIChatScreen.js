@@ -1,18 +1,19 @@
 // screens/AIChatScreen.js
+//
+// This used to show a hardcoded, fabricated exchange (styled to look
+// like a real AI response, including a specific invented stat) with no
+// actual text input anywhere on screen — there was no way to type a
+// message at all. There's no AI backend behind this app yet (a real
+// chat needs a server-side API call, not something safe to do directly
+// from the app — see project notes), so rather than keep faking a
+// conversation, this now honestly says the feature isn't live yet.
+
 import React from 'react';
 import { StyleSheet, ScrollView, StatusBar, SafeAreaView, View, Text } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import AIAvatar from '../components/AIAvatar';
-import ChatBubble from '../components/ChatBubble';
-import SuggestionChip from '../components/SuggestionChip';
 import { colors, type, spacing, gradients } from '../theme/tokens';
-
-const SUGGESTIONS = [
-  { id: 'analyze', label: 'Analyze today\u2019s games', icon: 'activity' },
-  { id: 'build', label: 'Build a ticket', icon: 'cpu' },
-  { id: 'explain', label: 'Explain this match', icon: 'help-circle' },
-];
 
 export default function AIChatScreen() {
   return (
@@ -24,33 +25,18 @@ export default function AIChatScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {/* Header: avatar front and center — this screen is the most
-            direct expression of "AI assistant," so the orb gets the
-            largest, most prominent placement in the whole app. */}
         <View style={styles.header}>
-          <AIAvatar size={56} isActive />
+          <AIAvatar size={56} isActive={false} />
           <Text style={styles.title}>AI Sports Analyst</Text>
-          <Text style={styles.subtitle}>Ask me anything about today's matches.</Text>
+          <Text style={styles.subtitle}>Coming soon</Text>
         </View>
 
-        <View style={styles.conversation}>
-          <ChatBubble
-            from="user"
-            text="What's the safest pick on tonight's card?"
-          />
-          <ChatBubble
-            from="ai"
-            text="Arsenal at home have the strongest underlying numbers tonight — high shot volume, low goals conceded. I'd weight that above anything with a bigger headline."
-          />
-        </View>
-
-        <View style={styles.suggestionsBlock}>
-          <Text style={styles.suggestionsLabel}>Try asking</Text>
-          <View style={styles.chipRow}>
-            {SUGGESTIONS.map((s) => (
-              <SuggestionChip key={s.id} label={s.label} icon={s.icon} onPress={() => {}} />
-            ))}
-          </View>
+        <View style={styles.body}>
+          <Text style={styles.bodyText}>
+            Real match chat isn't connected yet — this needs a live AI backend, which isn't
+            built into the app yet. Live scores and the Ticket Builder both work with real data
+            today; this screen will too once that's in place.
+          </Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -64,10 +50,11 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 160,
+    flexGrow: 1,
   },
   header: {
     alignItems: 'center',
-    paddingTop: spacing.xl,
+    paddingTop: spacing.xxl * 2,
     paddingHorizontal: spacing.xl,
     marginBottom: spacing.xl,
   },
@@ -78,29 +65,22 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   subtitle: {
+    ...type.bodyMedium,
+    color: colors.textTertiary,
+    fontSize: 12.5,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginTop: 6,
+  },
+  body: {
+    paddingHorizontal: spacing.xxl,
+    marginTop: spacing.md,
+  },
+  bodyText: {
     ...type.body,
     color: colors.textSecondary,
     fontSize: 13.5,
-    marginTop: 6,
+    lineHeight: 20,
     textAlign: 'center',
-  },
-  conversation: {
-    marginBottom: spacing.lg,
-  },
-  suggestionsBlock: {
-    paddingHorizontal: spacing.xl,
-    marginTop: spacing.md,
-  },
-  suggestionsLabel: {
-    ...type.bodyMedium,
-    color: colors.textTertiary,
-    fontSize: 11.5,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-    marginBottom: spacing.sm,
-  },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
   },
 });

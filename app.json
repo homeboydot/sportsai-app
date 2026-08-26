@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "SportsAI",
+    "slug": "sportsai-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#08090A",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#08090A"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "android": {
+      "package": "com.skytech.sportsaiapp",
+      "backgroundColor": "#08090A",
+      "adaptiveIcon": {
+        "backgroundColor": "#08090A"
+      }
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.skytech.sportsaiapp",
+      "backgroundColor": "#08090A"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "953a0544-35a5-47a6-bf0d-df77e5f0c0d8"
+      }
+    }
+  }
+}

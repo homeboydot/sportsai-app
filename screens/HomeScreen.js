@@ -8,13 +8,14 @@ import MatchSummaryCard from '../components/MatchSummaryCard';
 import BuildTicketButton from '../components/BuildTicketButton';
 import AIInsightCard from '../components/AIInsightCard';
 import LiveMatchesSection from '../components/LiveMatchesSection';
+import FavoritesSection from '../components/FavoritesSection';
 import QuickActions from '../components/QuickActions';
 import { colors, gradients } from '../theme/tokens';
 
 export default function HomeScreen({ navigation }) {
   return (
     <SafeAreaView style={styles.root}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle="light-content" backgroundColor={colors.bgBase} />
 
       {/* Ambient background wash — a very subtle emerald-tinted glow at
           the top of the screen, fading to matte black. This is what
@@ -29,6 +30,7 @@ export default function HomeScreen({ navigation }) {
         <MatchSummaryCard />
         <BuildTicketButton onPress={() => navigation.navigate('TicketBuilder')} />
         <AIInsightCard onExplain={() => navigation.navigate('AIChat')} />
+        <FavoritesSection onSeeAll={() => navigation.navigate('Matches')} />
         <LiveMatchesSection />
         <QuickActions
           onSelect={(actionId) => {

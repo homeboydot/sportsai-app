@@ -14,6 +14,8 @@
 
 const FOOTBALL_DATA_ORG_BASE_URL = 'https://api.football-data.org/v4';
 
+import { mockMatches } from '../../data/mockMatches';
+
 // The API key is never hardcoded. In Expo, only environment variables
 // prefixed with EXPO_PUBLIC_ are inlined into the client bundle at
 // build time — plain process.env.FOOTBALL_DATA_ORG_KEY (no prefix)
@@ -219,12 +221,21 @@ function buildCompetitionMatchesUrl(code, status) {
 // provider's contract requires, a status is synthesized here per match
 // based on its minute — purely inside this provider, so the shared mock
 // file itself stays untouched.
-
-import { mockMatches } from '../../data/mockMatches';
-
-function getMockFallback() {
+//
+// IDs are namespaced per dataset (e.g. "live-1", "scheduled-1") rather
+// than reused as-is. The underlying mockMatches array only has 5 fixed
+// IDs total — if live, today's, and finished matches all fail over to
+// mock at the same time (as happens when every real request fails,
+// e.g. under CORS in a browser), reusing bare IDs across all three
+// would hand out duplicates like id "1" three times once combined
+// anywhere in the app (e.g. TicketBuilderScreen.js's `[...liveMatches,
+// ...todayFixtures]`), which is exactly what caused the "duplicate
+// key" React warnings.
+function getMockFallback(status) {
+  const namespace = status.toLowerCase();
   return mockMatches.map((match) => ({
     ...match,
+    id: `${namespace}-${match.id}`,
     status: match.minute > 0 ? 'LIVE' : 'SCHEDULED',
   }));
 }
@@ -535,7 +546,7 @@ async function requestMatches(buildUrl, status, label) {
     console.warn(
       `footballDataOrgProvider: EXPO_PUBLIC_FOOTBALL_DATA_ORG_KEY is not set — ${label} falling back to mock match data.`
     );
-    return getMockFallback();
+    return getMockFallback(status);
   }
 
   const cacheKey = `status:${status}`;
@@ -593,7 +604,7 @@ async function requestMatches(buildUrl, status, label) {
   if (__DEV__) {
     console.log(`[footballDataOrgProvider] ${label}: Data source: MOCK (fallback due to error)`);
   }
-  return getMockFallback();
+  return getMockFallback(status);
 }
 
 // ---------------------------------------------------------------------

@@ -18,6 +18,8 @@ import {
 
 import AppNavigator from './navigation/AppNavigator';
 import { LiveMatchesProvider } from './contexts/LiveMatchesContext';
+import { FavoritesProvider } from './contexts/FavoritesContext';
+import { colors } from './theme/tokens';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -35,13 +37,15 @@ export default function App() {
     if (fontsLoaded) await SplashScreen.hideAsync();
   }, [fontsLoaded]);
 
-  if (!fontsLoaded) return null;
+  if (!fontsLoaded) return <View style={{ flex: 1, backgroundColor: colors.bgBase }} />;
 
   return (
-    <View style={{ flex: 1 }} onLayout={onLayout}>
-      <LiveMatchesProvider>
-        <AppNavigator />
-      </LiveMatchesProvider>
+    <View style={{ flex: 1, backgroundColor: colors.bgBase }} onLayout={onLayout}>
+      <FavoritesProvider>
+        <LiveMatchesProvider>
+          <AppNavigator />
+        </LiveMatchesProvider>
+      </FavoritesProvider>
     </View>
   );
 }
