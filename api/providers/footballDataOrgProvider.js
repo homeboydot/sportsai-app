@@ -268,9 +268,36 @@ function estimateMinuteFromKickoff(utcDate) {
   if (elapsedMs < 0) return null; // hasn't kicked off yet by our clock
 
   const elapsedMinutes = Math.floor(elapsedMs / 60000);
+
+  // A real match clock pauses for a ~15-minute half-time break — this
+  // estimate is just counting real-world minutes since kickoff, which
+  // doesn't pause for anything. Without adjusting for that, a match
+  // actually at 60-something' would show as ~75-90' — noticeably wrong,
+  // and wrong in a way that gets worse the further into the second half
+  // a match is. Subtracting a standard 15-minute break once a match is
+  // far enough past 45' brings the estimate much closer to reality,
+  // though it's still an estimate, not the real clock.
+  const HALF_TIME_BREAK_MINUTES = 15;
+  const FIRST_HALF_LENGTH = 45;
+
+  let estimatedMinute;
+  if (elapsedMinutes <= FIRST_HALF_LENGTH) {
+    // Still within a normal first half — no adjustment needed.
+    estimatedMinute = elapsedMinutes;
+  } else if (elapsedMinutes <= FIRST_HALF_LENGTH + HALF_TIME_BREAK_MINUTES) {
+    // Likely still in the half-time break itself — hold at 45' rather
+    // than counting into a second half that probably hasn't kicked off
+    // yet.
+    estimatedMinute = FIRST_HALF_LENGTH;
+  } else {
+    // Second half — subtract the break so the estimate reflects match
+    // time, not real-world time.
+    estimatedMinute = elapsedMinutes - HALF_TIME_BREAK_MINUTES;
+  }
+
   // Clamp so a match that's actually been over for a while (delayed
   // status update) doesn't show something absurd like "247'".
-  return Math.min(elapsedMinutes, 90);
+  return Math.min(estimatedMinute, 90);
 }
 
 /**
@@ -291,7 +318,19 @@ function normalizeMatch(match) {
   return {
     id: String(match.id ?? ''),
     league: match.competition?.name ?? 'Unknown League',
+    // Confirmed from football-data.org's own docs: the match object has
+    // a top-level "area" field with the country name (e.g. "France").
+    // Same reasoning as api/footballApi.js's country field — lets
+    // contexts/FavoritesContext.js disambiguate leagues that share a
+    // generic name across countries.
+    country: match.area?.name ?? null,
     minute,
+    // True when `minute` above came from estimateMinuteFromKickoff()
+    // rather than a real value football-data.org reported — lets the UI
+    // show something like "~67'" instead of "67'" so it doesn't read as
+    // more precise than it actually is. See MINUTE ESTIMATION notes
+    // above for why this estimate exists at all.
+    minuteIsEstimated: isLiveStatus && !hasRealMinute,
     home: match.homeTeam?.name ?? 'Home',
     away: match.awayTeam?.name ?? 'Away',
     homeScore: match.score?.fullTime?.home ?? 0,

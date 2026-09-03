@@ -19,6 +19,34 @@ const DEFAULT_FAVORITES = {
   leagues: ['Premier League', 'Champions League', 'La Liga'],
 };
 
+// Several countries name their top division something generic enough
+// to collide with a well-known league — most visibly, "Premier League"
+// is used by England, Ukraine, Hong Kong, and others. Without this,
+// favoriting the English Premier League could also match an unrelated
+// Ukrainian or Hong Kong match of the same literal name (confirmed via
+// real testing — a Hong Kong match surfaced in "For You" for someone
+// who'd favorited "Premier League" meaning England's).
+//
+// Only the well-known domestic leagues that actually have this
+// ambiguity risk are listed — competitions like "Champions League" or
+// "World Cup" are international/continental rather than tied to one
+// country, so they're left out rather than force-mapped incorrectly.
+//
+// If a match doesn't have a country recorded (shouldn't normally
+// happen now that both providers set it, but kept as a safety net),
+// matching falls back to name-only rather than incorrectly excluding
+// it.
+const AMBIGUOUS_LEAGUE_COUNTRIES = {
+  'premier league': 'england',
+  'championship': 'england',
+  'la liga': 'spain',
+  'bundesliga': 'germany',
+  'serie a': 'italy',
+  'ligue 1': 'france',
+  'eredivisie': 'netherlands',
+  'primeira liga': 'portugal',
+};
+
 const FavoritesContext = createContext(null);
 
 export function FavoritesProvider({ children }) {
@@ -72,6 +100,7 @@ export function FavoritesProvider({ children }) {
       const home = (match.home ?? '').toLowerCase();
       const away = (match.away ?? '').toLowerCase();
       const league = (match.league ?? '').toLowerCase();
+      const country = (match.country ?? '').toLowerCase();
 
       const teamHit = favorites.teams.some((t) => {
         const needle = t.toLowerCase();
@@ -79,7 +108,21 @@ export function FavoritesProvider({ children }) {
       });
       if (teamHit) return true;
 
-      return favorites.leagues.some((l) => league.includes(l.toLowerCase()));
+      return favorites.leagues.some((l) => {
+        const needle = l.toLowerCase();
+        if (!league.includes(needle)) return false;
+
+        const expectedCountry = AMBIGUOUS_LEAGUE_COUNTRIES[needle];
+        if (expectedCountry && country) {
+          // A known-ambiguous league name — only count it as a match if
+          // the country actually lines up (e.g. "Premier League" +
+          // "England", not "Premier League" + "Ukraine").
+          return country === expectedCountry;
+        }
+        // Not a known-ambiguous name, or we don't have a country to
+        // check — fall back to the plain name match.
+        return true;
+      });
     },
     [favorites]
   );

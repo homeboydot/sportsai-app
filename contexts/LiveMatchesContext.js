@@ -32,9 +32,18 @@
 // .slice() over already-fetched data anyway (see matchesService.js) —
 // so there's no cost to always fetching the full list once and slicing
 // per-consumer.
+//
+// STEP 3 & 4 (Match Intelligence roadmap) — useMatchEvents (which
+// internally uses useMatchHistory) is wired in here so every screen
+// has access to "what did this match look like last poll"
+// (getMatchHistory) and "what just objectively changed" (recentEvents)
+// without each needing its own tracking. Step 4 only detects real,
+// verifiable changes (a score changed, a status changed) — it doesn't
+// interpret or narrate anything. That's Step 5.
 
-import React, { createContext, useContext } from 'react';
+import React, { createContext, useContext, useMemo } from 'react';
 import useLiveMatches from '../hooks/useLiveMatches';
+import useMatchEvents from '../hooks/useMatchEvents';
 
 const LiveMatchesContext = createContext(null);
 
@@ -44,7 +53,17 @@ const LiveMatchesContext = createContext(null);
  * same underlying poll and state rather than each starting its own.
  */
 export function LiveMatchesProvider({ children }) {
-  const value = useLiveMatches();
+  const liveMatchesValue = useLiveMatches();
+  const { getMatchHistory, recentEvents } = useMatchEvents(liveMatchesValue.liveMatches);
+
+  const value = useMemo(
+    () => ({
+      ...liveMatchesValue,
+      getMatchHistory,
+      recentEvents,
+    }),
+    [liveMatchesValue, getMatchHistory, recentEvents]
+  );
 
   return (
     <LiveMatchesContext.Provider value={value}>
@@ -56,9 +75,11 @@ export function LiveMatchesProvider({ children }) {
 /**
  * @returns {{
  *   matches: Array, liveMatches: Array, todayFixtures: Array, finishedMatches: Array,
- *   loading: boolean, error: Error|null, refresh: () => void
- * }} the exact same shape useLiveMatches() itself returns — this is a
- *   drop-in replacement for calling useLiveMatches() directly.
+ *   loading: boolean, error: Error|null, refresh: () => void,
+ *   getMatchHistory: (matchId: string) => { previous: object|null, current: object|null },
+ *   recentEvents: Array<{ type: string, matchId: string, description: string, at: number }>,
+ * }} the same shape useLiveMatches() returns, plus Step 3/4's
+ *   getMatchHistory and recentEvents.
  */
 export function useLiveMatchesContext() {
   const ctx = useContext(LiveMatchesContext);

@@ -7,11 +7,11 @@ React Native, now a real multi-screen app with bottom tab navigation.
 
 | Tab | File | Purpose |
 |---|---|---|
-| Home | `screens/HomeScreen.js` | Briefing, Build My Ticket, AI Insight, live rail, quick actions |
-| AI Analyst | `screens/AIChatScreen.js` | Chat with the assistant, sample conversation, suggestion prompts |
-| Live Matches | `screens/MatchesScreen.js` | Full list of live matches, scoreboard-style, no odds |
-| Ticket Builder | `screens/TicketBuilderScreen.js` | Explains the AI analysis process, "Create Analysis" CTA |
-| Profile | `screens/ProfileScreen.js` | Favorite teams/leagues, AI preferences |
+| Home | `screens/HomeScreen.js` | Briefing, Build My Ticket, AI Insight, live rail, favorites, quick actions |
+| AI Analyst | `screens/AIChatScreen.js` | Honest "coming soon" state — no backend/model wired in yet |
+| Live Matches | `screens/MatchesScreen.js` | Full live match list, league coverage note, All/Favorites toggle |
+| Ticket Builder | `screens/TicketBuilderScreen.js` | Pick real matches, copy your picks to clipboard — no AI, no predictions |
+| Profile | `screens/ProfileScreen.js` | Editable, persisted favorite teams/leagues, AI preferences (saved now, apply once AI Chat is live) |
 
 ## Navigation
 
@@ -111,11 +111,12 @@ Scan the QR code with Expo Go (iOS/Android) or press `w` for a web preview.
 
 ## Extending further
 
-- Wire `BuildTicketButton`'s `onPress` on both Home and TicketBuilderScreen
-  to your real ticket-generation flow.
-- Replace the static arrays in `MatchesScreen.js` / `LiveMatchesSection.js`
-  with a shared live-data source — both already consume the same match
-  shape (`league, minute, home, away, homeScore, awayScore`).
-- `ChatBubble` and `SuggestionChip` are ready to drive a real chat state
-  (message list + input) on `AIChatScreen.js`.
-
+- Grow `AIChatScreen.js` from its current "coming soon" state into a
+  real chat — needs a backend + LLM provider (see project notes; this
+  is a distinct, separately-scoped effort, not a quick wire-up).
+- The two real data providers (`api/footballApi.js`,
+  `api/providers/footballDataOrgProvider.js`) don't yet share every
+  field consistently — see `api/providers/providerContract.js` for the
+  documented shape, and check both files against it before adding new
+  fields.
+- League standings, a match detail screen, and search don't exist yet.

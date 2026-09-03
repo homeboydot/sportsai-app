@@ -10,11 +10,26 @@
 // fetchMatches() is kept for backward compatibility with existing
 // callers (matchesService.js) and simply delegates to fetchLiveMatches().
 //
-// If a request fails for any reason (missing key, network error, bad
-// response, unexpected payload), each function falls back to local
-// mock data, so matchesService.js, the hook, and every screen/component
-// keep working exactly as before and never have to know the difference.
+// CACHING (added after real-world testing showed the free-tier daily
+// quota — 100 requests/day — getting exhausted quickly): every
+// successful real response is saved on-device via AsyncStorage, keyed
+// per dataset, and reused for a while before the next real request is
+// attempted. Critically, if a real request ever fails for ANY reason
+// (network error, or the quota genuinely running out), and there's
+// previously-saved data for that dataset — even if it's past its normal
+// reuse window — that saved data is served instead of throwing. This
+// means running out of quota degrades gracefully into "showing
+// slightly older real data" rather than an error or an empty screen.
+// Only when there's truly no saved data at all does this throw, which
+// is what lets api/providerManager.js correctly fall through to
+// football-data.org next.
+//
+// If a request fails AND there's no cached data to fall back on, each
+// function throws — matchesService.js, the hook, and providerManager
+// handle that by trying the next provider, exactly as documented in
+// api/providers/providerContract.js.
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { mockMatches } from '../data/mockMatches';
 
 // ---------------------------------------------------------------------
@@ -59,6 +74,53 @@ const SIMULATE_FAILURE = false; // <-- set to false to test real API-FOOTBALL re
 // to mock data, rather than leaving the UI's loading state hanging.
 const REQUEST_TIMEOUT_MS = 8000;
 
+// ---------------------------------------------------------------------
+// On-device caching
+// ---------------------------------------------------------------------
+// Reuse windows, per dataset. Live matches get a shorter window since
+// they genuinely change; today's/finished fixtures barely change
+// minute-to-minute, so a longer window costs nothing in freshness but
+// saves real quota. These numbers are deliberately conservative given
+// the 100-requests/day free-tier budget — with a 30s poll interval,
+// unadjusted polling would burn the entire daily quota in well under
+// 20 minutes of continuous use.
+const CACHE_TTL_MS = {
+  live: 5 * 60 * 1000, // 5 minutes
+  today: 15 * 60 * 1000, // 15 minutes
+  finished: 15 * 60 * 1000, // 15 minutes
+};
+
+const CACHE_KEY_PREFIX = 'footballApi:cache:';
+
+// In-memory copy of whatever's been read from/written to AsyncStorage
+// this session, so repeated calls within the same app run don't need
+// to round-trip through AsyncStorage every time.
+const memoryCache = new Map();
+
+async function readCache(dataset) {
+  if (memoryCache.has(dataset)) return memoryCache.get(dataset);
+  try {
+    const raw = await AsyncStorage.getItem(CACHE_KEY_PREFIX + dataset);
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    memoryCache.set(dataset, entry);
+    return entry;
+  } catch (err) {
+    if (__DEV__) console.warn(`[footballApi] readCache(${dataset}) failed:`, err.message);
+    return null;
+  }
+}
+
+async function writeCache(dataset, data) {
+  const entry = { data, savedAt: Date.now() };
+  memoryCache.set(dataset, entry);
+  try {
+    await AsyncStorage.setItem(CACHE_KEY_PREFIX + dataset, JSON.stringify(entry));
+  } catch (err) {
+    if (__DEV__) console.warn(`[footballApi] writeCache(${dataset}) failed:`, err.message);
+  }
+}
+
 // Stands in for real network latency on the mock-fallback path, so
 // loading states behave consistently whether the real request or the
 // fallback path is taken.
@@ -74,15 +136,63 @@ function networkDelay(ms = 400) {
  *   { id, league, minute, home, away, homeScore, awayScore }
  * — identical to the shape data/mockMatches.js has always used.
  */
+/**
+ * Maps API-FOOTBALL's own status.short code onto the same status
+ * vocabulary football-data.org uses (IN_PLAY / PAUSED / FINISHED /
+ * SCHEDULED) — so downstream code (e.g. TicketMatchRow.js's isLive
+ * check) works the same regardless of which provider a match came
+ * from. Previously this field was omitted entirely here, which meant
+ * anything checking match.status silently failed for every
+ * API-FOOTBALL-sourced match, even genuinely live ones.
+ *
+ * Reference: API-FOOTBALL's documented short codes are TBD, NS, 1H,
+ * HT, 2H, ET, BT, P, SUSP, INT, FT, AET, PEN, PST, CANC, ABD, AWD, WO,
+ * LIVE.
+ */
+function mapStatus(shortCode) {
+  switch (shortCode) {
+    case 'HT':
+      return 'PAUSED';
+    case '1H':
+    case '2H':
+    case 'ET':
+    case 'BT':
+    case 'P':
+    case 'LIVE':
+      return 'IN_PLAY';
+    case 'FT':
+    case 'AET':
+    case 'PEN':
+      return 'FINISHED';
+    case 'NS':
+    case 'TBD':
+    case 'PST':
+      return 'SCHEDULED';
+    default:
+      // SUSP, INT, CANC, ABD, AWD, WO, or anything unrecognized — none
+      // of these are "live" in a meaningful sense, so they intentionally
+      // fall outside IN_PLAY/PAUSED/SCHEDULED/FINISHED rather than being
+      // force-mapped to one.
+      return shortCode ?? 'UNKNOWN';
+  }
+}
+
 function normalizeFixture(fixture) {
   return {
     id: String(fixture.fixture?.id ?? ''),
     league: fixture.league?.name ?? 'Unknown League',
+    // Needed to tell apart leagues that share a generic name across
+    // countries (e.g. "Premier League" is used by England, Ukraine,
+    // Hong Kong, and others) — see contexts/FavoritesContext.js, which
+    // uses this to avoid matching a favorited "Premier League" (English)
+    // against an unrelated Ukrainian or Hong Kong match of the same name.
+    country: fixture.league?.country ?? null,
     minute: fixture.fixture?.status?.elapsed ?? 0,
     home: fixture.teams?.home?.name ?? 'Home',
     away: fixture.teams?.away?.name ?? 'Away',
     homeScore: fixture.goals?.home ?? 0,
     awayScore: fixture.goals?.away ?? 0,
+    status: mapStatus(fixture.fixture?.status?.short),
   };
 }
 
@@ -206,12 +316,51 @@ async function requestFixtures(endpoint) {
 }
 
 /**
+ * Wraps requestFixtures() with the on-device cache + stale-fallback
+ * behavior described at the top of this file.
+ *
+ * @param {string} dataset - 'live' | 'today' | 'finished' — cache key
+ *   and TTL lookup.
+ * @param {string} endpoint - the full API-FOOTBALL endpoint URL.
+ * @returns {Promise<Array>}
+ */
+async function fetchWithCache(dataset, endpoint) {
+  const cached = await readCache(dataset);
+  const ttl = CACHE_TTL_MS[dataset];
+
+  if (cached && Date.now() - cached.savedAt < ttl) {
+    if (__DEV__) {
+      console.log(`[footballApi] ${dataset}: serving cached data (age ${Date.now() - cached.savedAt}ms, within ${ttl}ms window)`);
+    }
+    return cached.data;
+  }
+
+  try {
+    const data = await requestFixtures(endpoint);
+    await writeCache(dataset, data);
+    return data;
+  } catch (err) {
+    if (cached) {
+      if (__DEV__) {
+        console.warn(
+          `[footballApi] ${dataset}: real request failed (${err.message}) — serving stale cached data (age ${Date.now() - cached.savedAt}ms) instead of failing`
+        );
+      }
+      return cached.data;
+    }
+    // No cached data at all to fall back on — let this propagate up so
+    // providerManager.js can try the next provider.
+    throw err;
+  }
+}
+
+/**
  * Fetch all matches currently live.
  * Endpoint: GET {API_FOOTBALL_BASE_URL}/fixtures?live=all
  * @returns {Promise<Array>}
  */
 export async function fetchLiveMatches() {
-  return requestFixtures(LIVE_FIXTURES_ENDPOINT);
+  return fetchWithCache('live', LIVE_FIXTURES_ENDPOINT);
 }
 
 /**
@@ -220,7 +369,7 @@ export async function fetchLiveMatches() {
  * @returns {Promise<Array>}
  */
 export async function fetchTodayFixtures() {
-  return requestFixtures(TODAY_FIXTURES_ENDPOINT);
+  return fetchWithCache('today', TODAY_FIXTURES_ENDPOINT);
 }
 
 /**
@@ -229,7 +378,7 @@ export async function fetchTodayFixtures() {
  * @returns {Promise<Array>}
  */
 export async function fetchFinishedMatches() {
-  return requestFixtures(FINISHED_FIXTURES_ENDPOINT);
+  return fetchWithCache('finished', FINISHED_FIXTURES_ENDPOINT);
 }
 
 /**
